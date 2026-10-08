@@ -5,7 +5,7 @@
 //  Created by ELMOOTAZBELLAH ELNOZAHY on 9/13/26.
 //
 
-
+#include <chrono>
 #include <queue>
 #include "scheduler.hpp"
 
@@ -20,12 +20,16 @@ bool started_runs = false;
 std::queue<ProcessId_t> perfQ;
 std::queue<ProcessId_t> efficQ;
 
+double start_time;
+
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
     SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);\
     
     if (!started_runs)
     {
+        start_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
         started_runs = true;
         for (uint8_t i = 1; i < FIRST_EFF_CORE; i++)
         {
@@ -220,4 +224,7 @@ void CStateTransitionComplete(CPUId_t core_id){
 void SimulationComplete(Time_t now) {
     // Add any bookkeeping or statistics that you would want to collect. Program terminates after this function returns.
     std::cout << "Run stopped at " << FormatTime(now) << " after consuming " << GetTotalEnergyConsumed()/3600000000.0 << " kWh" << std::endl;
+    double end_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    double energy_delay =  (end_time - start_time) * GetTotalEnergyConsumed() / 3600000000.0;
+    std::cout << "Energy Delay Product: " << energy_delay << std::endl;
 }
