@@ -9,16 +9,11 @@
 #include <queue>
 #include "scheduler.hpp"
 
-double last_energy_consumed;
-uint32_t time_slices_called;
+std::queue<ProcessId_t> readyQ;
 
-ProcessId_t p_core_running[FIRST_EFF_CORE];
-ProcessId_t e_core_running[CPU_COUNT - FIRST_EFF_CORE];
+ProcessId_t core_running[CPU_COUNT];
 ProcessId_t running_interim;
 bool started_runs = false;
-
-std::queue<ProcessId_t> perfQ;
-std::queue<ProcessId_t> efficQ;
 
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
@@ -27,30 +22,26 @@ void CreateProcess(ProcessId_t pid) {
     if (!started_runs)
     {
         started_runs = true;
-        for (uint8_t i = 1; i < FIRST_EFF_CORE; i++)
+        for (uint8_t i = 1; i < CPU_COUNT; i++)
         {
-            p_core_running[i] = InvalidProcessId();
+            core_running[i] = InvalidProcessId();
         }
-        for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
-        {
-            e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
-        }
-        p_core_running[0] = pid;
+        core_running[0] = pid;
         LoadContext(pid, 0);
         RunCore(0);
     } else
     {
         for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
         {
-            if (p_core_running[i] == InvalidProcessId())
+            if (core_running[i] == InvalidProcessId())
             {
-                p_core_running[i] = pid;
+                core_running[i] = pid;
                 LoadContext(pid, i);
                 RunCore(i);
                 return;
             }
         }
-        perfQ.push(pid);
+        readyQ.push(pid);
     }
 }
 
@@ -58,38 +49,18 @@ void ExitProcess(ProcessId_t pid) {
     // Process finished running. Update the scheduler's data structures and decisions accordingly.
     for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
     {
-        if (p_core_running[i] == pid)
+        if (core_running[i] == pid)
         {
-            // print("Killing process %u in CPU %u\n", pid, i);
-            if (!perfQ.empty())
+            if (!readyQ.empty())
             {
-                running_interim = perfQ.front();
-                p_core_running[i] = running_interim;
-                perfQ.pop();
+                running_interim = readyQ.front();
+                core_running[i] = running_interim;
+                readyQ.pop();
                 LoadContext(running_interim, i);
                 RunCore(i);
             } else
             {
-                p_core_running[i] = InvalidProcessId();
-            }
-            return;
-        }
-    }
-    for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
-    {
-        if (e_core_running[i - FIRST_EFF_CORE] == pid)
-        {
-            // print("Killing process %u in CPU %u\n", pid, i);
-            if (!efficQ.empty())
-            {
-                running_interim = efficQ.front();
-                e_core_running[i - FIRST_EFF_CORE] = running_interim;
-                efficQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
+                core_running[i] = InvalidProcessId();
             }
             return;
         }
@@ -100,121 +71,25 @@ void ExitProcess(ProcessId_t pid) {
 void TimerInterrupt(Time_t now) {
     // You received a timer interrupt. This is where you want to execute scheduling decisions
     
-    double cur_total_energy = GetTotalEnergyConsumed();
-    if (time_slices_called == 0 ||         // Initial state so assume every core uses more power than is expected and migrate everything to back of performance queue
-        last_energy_consumed / time_slices_called < cur_total_energy - last_energy_consumed)
+    // Iterate through each core to identify which ones are running a process
+    for (uint8_t i = 0; i < FIRST_EFF_CORE && !readyQ.empty(); i++)
     {
-        if (time_slices_called == 0)
+        // If the core is running a process, stop it and enqueue the process before installing a new one
+        if (core_running[i] != InvalidProcessId())
         {
-            // print("Entering performance for initial state.\n");
-        } else 
-        {
-            // print("Entering performance state due to energy consumption being higher than expected.\n");
+            SaveContext(core_running[i], i);
+            readyQ.push(core_running[i]);
         }
-        // If the average amount of energy previously consumed is higher for the current time slice, assume
-        // higher power consumption than hoped for from efficiency cores and shift their processes to performance queue
-        
-        for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
-        {
-            if (e_core_running[i - FIRST_EFF_CORE] != InvalidProcessId())
-            {
-                // print("Saving efficiency core %u with process %u\n", i, e_core_running[i - FIRST_EFF_CORE]);
-                // Shift possibly higher cost processes to performance queue
-                SaveContext(e_core_running[i - FIRST_EFF_CORE], i);
-                perfQ.push(e_core_running[i - FIRST_EFF_CORE]);
-            }
-
-            if (!efficQ.empty())
-            {
-                running_interim = efficQ.front();
-                e_core_running[i - FIRST_EFF_CORE] = running_interim;
-                efficQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
-            }
-        }
-        
-        for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
-        {
-            if (p_core_running[i] != InvalidProcessId())
-            {
-                // print("Saving power core %u with process %u\n", i, p_core_running[i]);
-                SaveContext(p_core_running[i], i);
-                perfQ.push(p_core_running[i]);
-            }
-
-            if (!perfQ.empty())
-            {
-                running_interim = perfQ.front();
-                p_core_running[i] = running_interim;
-                perfQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                p_core_running[i] = InvalidProcessId();
-            }
-        }
-
-    } else
-    {
-        // If the average amount of energy previously consumed is lower for the current time slice, assume
-        // lower power consumption than hoped for from performance cores and shift their processes to efficiency queue
-        // print("Entering efficiency state due to energy consumption being lower than expected.\n");
-        for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
-        {
-            if (p_core_running[i] != InvalidProcessId())
-            {
-                // Shift possibly higher cost processes to performance queue
-                // print("Saving power core %u with process %u\n", i, p_core_running[i]);
-                SaveContext(p_core_running[i], i);
-                efficQ.push(p_core_running[i]);
-            }
-
-            if (!perfQ.empty())
-            {
-                running_interim = perfQ.front();
-                p_core_running[i] = running_interim;
-                perfQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                p_core_running[i] = InvalidProcessId();
-            }
-        }
-
-        for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
-        {
-            if (e_core_running[i - FIRST_EFF_CORE] != InvalidProcessId())
-            {
-                // // print("Saving efficiency core %u with process %u\n", i, e_core_running[i - FIRST_EFF_CORE]);
-                SaveContext(e_core_running[i - FIRST_EFF_CORE], i);
-                efficQ.push(e_core_running[i - FIRST_EFF_CORE]);
-            }
-
-            if (!efficQ.empty())
-            {
-                running_interim = efficQ.front();
-                e_core_running[i - FIRST_EFF_CORE] = running_interim;
-                efficQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
-            }
-        }
+        running_interim = readyQ.front();
+        core_running[i] = running_interim;
+        readyQ.pop();
+        LoadContext(running_interim, i);
+        RunCore(i);
     }
-
-    last_energy_consumed = cur_total_energy;
-    time_slices_called++;
 }
 
 void CStateTransitionComplete(CPUId_t core_id){
+    
 }
 
 void SimulationComplete(Time_t now) {
