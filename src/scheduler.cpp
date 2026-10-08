@@ -102,7 +102,7 @@ void TimerInterrupt(Time_t now) {
     
     double cur_total_energy = GetTotalEnergyConsumed();
     if (time_slices_called == 0 ||         // Initial state so assume every core uses more power than is expected and migrate everything to back of performance queue
-        last_energy_consumed / time_slices_called < cur_total_energy - last_energy_consumed)
+        last_energy_consumed / time_slices_called < (cur_total_energy - last_energy_consumed) * PERF_SOFT)
     {
         if (time_slices_called == 0)
         {
