@@ -13,4 +13,8 @@
 #include "interfaces.h"
 #include "sim_types.h"
 
+extern const uint8_t CPU_COUNT = 8;
+extern const uint8_t FIRST_EFF_CORE = 4;
+extern const double PERF_SOFT = 2;
+
 #endif /* scheduler_hpp */

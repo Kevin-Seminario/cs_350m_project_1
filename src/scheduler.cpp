@@ -6,6 +6,8 @@
 //
 
 #include <chrono>
+#include <unordered_map>
+#include <unordered_set>
 #include <queue>
 #include "scheduler.hpp"
 
@@ -20,17 +22,16 @@ bool started_runs = false;
 std::queue<ProcessId_t> perfQ;
 std::queue<ProcessId_t> efficQ;
 
-double start_time;
+const auto start_time = std::chrono::steady_clock::now();
 
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
-    SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);\
+    SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);
     
     if (!started_runs)
     {
-        start_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
         started_runs = true;
+
         for (uint8_t i = 1; i < FIRST_EFF_CORE; i++)
         {
             p_core_running[i] = InvalidProcessId();
@@ -105,112 +106,71 @@ void TimerInterrupt(Time_t now) {
     // You received a timer interrupt. This is where you want to execute scheduling decisions
     
     double cur_total_energy = GetTotalEnergyConsumed();
-    if (time_slices_called == 0 ||         // Initial state so assume every core uses more power than is expected and migrate everything to back of performance queue
-        last_energy_consumed / time_slices_called < (cur_total_energy - last_energy_consumed) * PERF_SOFT)
-    {
-        if (time_slices_called == 0)
-        {
-            // print("Entering performance for initial state.\n");
-        } else 
-        {
-            // print("Entering performance state due to energy consumption being higher than expected.\n");
-        }
-        // If the average amount of energy previously consumed is higher for the current time slice, assume
-        // higher power consumption than hoped for from efficiency cores and shift their processes to performance queue
+    bool need_performance = time_slices_called == 0 ||         // Initial state so assume every core uses more power than is expected and migrate everything to back of performance queue
+         last_energy_consumed / time_slices_called < (cur_total_energy - last_energy_consumed) * PERF_SOFT; 
+    // bool need_performance = true;
         
-        for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
-        {
-            if (e_core_running[i - FIRST_EFF_CORE] != InvalidProcessId())
-            {
-                // print("Saving efficiency core %u with process %u\n", i, e_core_running[i - FIRST_EFF_CORE]);
-                // Shift possibly higher cost processes to performance queue
-                SaveContext(e_core_running[i - FIRST_EFF_CORE], i);
-                perfQ.push(e_core_running[i - FIRST_EFF_CORE]);
-            }
+    // If the average amount of energy previously consumed is higher for the current time slice, assume
+    // higher power consumption than hoped for from efficiency cores and shift their processes to performance queue
 
-            if (!efficQ.empty())
-            {
-                running_interim = efficQ.front();
-                e_core_running[i - FIRST_EFF_CORE] = running_interim;
-                efficQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
-            }
-        }
+    // If the average amount of energy previously consumed is lower for the current time slice, assume
+    // lower power consumption than hoped for from performance cores and shift their processes to efficiency queue
         
-        for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
+        
+    for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
+    {
+        if (p_core_running[i] != InvalidProcessId())
         {
-            if (p_core_running[i] != InvalidProcessId())
+            // print("Saving efficiency core %u with process %u\n", i, e_core_running[i - FIRST_EFF_CORE]);
+            // Shift possibly higher cost processes to performance queue
+            SaveContext(p_core_running[i], i);
+            if (need_performance)
             {
-                // print("Saving power core %u with process %u\n", i, p_core_running[i]);
-                SaveContext(p_core_running[i], i);
                 perfQ.push(p_core_running[i]);
-            }
-
-            if (!perfQ.empty())
-            {
-                running_interim = perfQ.front();
-                p_core_running[i] = running_interim;
-                perfQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
             } else
             {
-                p_core_running[i] = InvalidProcessId();
-            }
-        }
-
-    } else
-    {
-        // If the average amount of energy previously consumed is lower for the current time slice, assume
-        // lower power consumption than hoped for from performance cores and shift their processes to efficiency queue
-        // print("Entering efficiency state due to energy consumption being lower than expected.\n");
-        for (uint8_t i = 0; i < FIRST_EFF_CORE; i++)
-        {
-            if (p_core_running[i] != InvalidProcessId())
-            {
-                // Shift possibly higher cost processes to performance queue
-                // print("Saving power core %u with process %u\n", i, p_core_running[i]);
-                SaveContext(p_core_running[i], i);
                 efficQ.push(p_core_running[i]);
             }
+        }
 
-            if (!perfQ.empty())
+        if (!perfQ.empty())
+        {
+            running_interim = perfQ.front();
+            p_core_running[i] = running_interim;
+            perfQ.pop();
+            LoadContext(running_interim, i);
+            RunCore(i);
+        } else
+        {
+            p_core_running[i] = InvalidProcessId();
+        }
+    }
+        
+    for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
+    {
+        if (e_core_running[i - FIRST_EFF_CORE] != InvalidProcessId())
+        {
+            // print("Saving power core %u with process %u\n", i, p_core_running[i]);
+            SaveContext(e_core_running[i - FIRST_EFF_CORE], i);
+            if (need_performance)
             {
-                running_interim = perfQ.front();
-                p_core_running[i] = running_interim;
-                perfQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
+                perfQ.push(e_core_running[i - FIRST_EFF_CORE]);
             } else
             {
-                p_core_running[i] = InvalidProcessId();
+                efficQ.push(e_core_running[i - FIRST_EFF_CORE]);
             }
         }
 
-        for (uint8_t i = FIRST_EFF_CORE; i < CPU_COUNT; i++)
+        if (!efficQ.empty())
         {
-            if (e_core_running[i - FIRST_EFF_CORE] != InvalidProcessId())
-            {
-                // // print("Saving efficiency core %u with process %u\n", i, e_core_running[i - FIRST_EFF_CORE]);
-                SaveContext(e_core_running[i - FIRST_EFF_CORE], i);
-                efficQ.push(e_core_running[i - FIRST_EFF_CORE]);
-            }
-
-            if (!efficQ.empty())
-            {
-                running_interim = efficQ.front();
-                e_core_running[i - FIRST_EFF_CORE] = running_interim;
-                efficQ.pop();
-                LoadContext(running_interim, i);
-                RunCore(i);
-            } else
-            {
-                e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
-            }
+            running_interim = efficQ.front();
+            e_core_running[i - FIRST_EFF_CORE] = running_interim;
+            efficQ.pop();
+            LoadContext(running_interim, i);
+            RunCore(i);
+        } else
+        {
+            e_core_running[i - FIRST_EFF_CORE] = InvalidProcessId();
         }
     }
 
@@ -224,7 +184,9 @@ void CStateTransitionComplete(CPUId_t core_id){
 void SimulationComplete(Time_t now) {
     // Add any bookkeeping or statistics that you would want to collect. Program terminates after this function returns.
     std::cout << "Run stopped at " << FormatTime(now) << " after consuming " << GetTotalEnergyConsumed()/3600000000.0 << " kWh" << std::endl;
-    double end_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    double energy_delay =  (end_time - start_time) * GetTotalEnergyConsumed() / 3600000000.0;
+    
+    const auto end_time = std::chrono::steady_clock::now();
+    const auto elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
+    const double energy_delay =  elapsed_time * GetTotalEnergyConsumed();
     std::cout << "Energy Delay Product: " << energy_delay << std::endl;
 }
